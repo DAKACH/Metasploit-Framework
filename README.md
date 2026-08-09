@@ -79,5 +79,5 @@ msfconsole -q
     
 5. **Post-Exploitation:** Gathering evidence, credential dumping, and pivoting.
 
-![[Pasted image 20260809091502.png|652]]
+![image1](<Pasted image 20260809091502.png|652>)
 
