@@ -715,3 +715,162 @@ msf6 > db_export -f xml /root/engagement_backup.xml
 # Export password hashes for offline cracking
 msf6 > db_export -f pwdump /root/cracking_hashes.txt
 ```
+
+---
+
+# Metasploit Plugins Architecture & Custom Extensions
+
+## Overview
+
+**Plugins** are modular extensions created by third-party vendors or individual researchers that integrate external utilities directly into `msfconsole`. Unlike standard modules (`auxiliary`, `exploits`, `post`), plugins communicate with the underlying Metasploit API, allowing operators to manipulate the framework, automate database logging, integrate enterprise vulnerability scanners (Nessus, Nexpose, OpenVAS), and add custom command sets without leaving the console interface.
+
+```
++-----------------------------------+
+|      Third-Party Security Tool    |
+|   (Nessus, Nexpose, OpenVAS, C2)  |
++-----------------┬-----------------+
+                  │ Native API Hook
+                  ▼
++-----------------------------------+
+|     Metasploit Plugin Layer       |
+|    (/plugins/*.rb / Ruby Mixins)  |
++-----------------┬-----------------+
+                  │ Framework Integration
+                  ▼
++-----------------------------------+
+|       msfconsole Interface        |
+|  - Extended Help Menus            |
+|  - Direct Database Sync           |
+|  - Automated Multi-Session Tasks  |
++-----------------------------------+
+```
+
+## 1. Plugin Ecosystem & Directory Structure
+
+Plugins reside as Ruby scripts (`.rb`) in the default system path:
+
+```bash
+/usr/share/metasploit-framework/plugins/
+```
+
+### Checking Available Plugins
+
+```bash
+enamto@htb[/htb]$ ls /usr/share/metasploit-framework/plugins
+
+aggregator.rb      beholder.rb        event_tester.rb  komand.rb     msfd.rb    nexpose.rb   request.rb  session_notifier.rb  sounds.rb  token_adduser.rb  wmap.rb
+alias.rb           db_credcollect.rb  ffautoregen.rb   lab.rb        msgrpc.rb  openvas.rb   rssfeed.rb  session_tagger.rb    sqlmap.rb  token_hunter.rb
+auto_add_route.rb  db_tracker.rb      ips_filter.rb    libnotify.rb  nessus.rb  pcap_log.rb  sample.rb   socket_logger.rb     thread.rb  wiki.rb
+```
+
+## 2. Loading & Interacting with Plugins
+
+Plugins are loaded dynamically during an active session using the `load <plugin_name>` command.
+
+### Example: Loading the Nessus Bridge Plugin
+
+```bash
+msf6 > load nessus
+
+[*] Nessus Bridge for Metasploit
+[*] Type nessus_help for a command listing
+[*] Successfully loaded Plugin: Nessus
+```
+
+Once loaded, the plugin registers unique commands directly into the `msfconsole` environment:
+
+```bash
+msf6 > nessus_help
+
+Command                     Help Text
+-------                     ---------
+Generic Commands            
+-----------------           -----------------
+nessus_connect              Connect to a Nessus server
+nessus_logout               Logout from the Nessus server
+nessus_login                Login into the connected Nessus server with credentials
+nessus_policy_list          List all policies
+```
+
+> **Error Handling:** If a specified `.rb` script is missing from the directory, MSF returns a load failure (`Failed to load plugin: cannot load such file`).
+
+## 3. Installing Custom Plugins (Case Study: DarkOperator's Pentest Plugin)
+
+Custom plugins not included with the OS distribution can be cloned and copied directly into the plugins directory.
+
+### Step 1: Clone the Plugin Repository
+
+```bash
+enamto@htb[/htb]$ git clone https://github.com/darkoperator/Metasploit-Plugins
+```
+
+### Step 2: Copy the Plugin to the MSF Directory
+
+```bash
+enamto@htb[/htb]$ sudo cp ./Metasploit-Plugins/pentest.rb /usr/share/metasploit-framework/plugins/pentest.rb
+```
+
+### Step 3: Load and Verify in `msfconsole`
+
+```bash
+enamto@htb[/htb]$ msfconsole -q
+
+msf6 > load pentest
+
+       ___         _          _     ___ _           _
+      | _ \___ _ _| |_ ___ __| |_  | _ \ |_  _ __ _(_)_ _
+      |  _/ -_) ' \  _/ -_|_-<  _| |  _/ | || / _` | | ' \ 
+      |_| \___|_||_\__\___/__/\__| |_| |_|\_,_\__, |_|_||_|
+                                              |___/
+      
+Version 1.6
+Pentest Plugin loaded.
+by Carlos Perez (carlos_perez[at]darkoperator.com)
+[*] Successfully loaded plugin: pentest
+```
+
+### Added Command Categories via `pentest.rb`
+
+- **`auto_exploit`:** Automatically runs matching exploits against hosts based on vulnerability scanner data in the database (`vuln_exploit`).
+    
+- **`discovery`:** Executes discovery and port-scanning modules across non-pivot and pivoted networks (`pivot_network_discover`).
+    
+- **`postauto`:** Automates post-exploitation tasks across multiple sessions simultaneously (`multi_post`, `app_creds`, `sys_creds`).
+    
+
+## 4. Popular Pre-Installed & Third-Party Plugins
+
+|**Plugin Name**|**Category**|**Primary Function**|
+|---|---|---|
+|**`nessus`**|Vulnerability Scanner|Bridges Nessus scans directly into the MSF database workspace.|
+|**`nexpose`** / **`openvas`**|Vulnerability Scanner|Ingests vulnerability reports and populates target tables.|
+|**`wmap`**|Web Application Scanner|Web application vulnerability scanner integrated into MSF.|
+|**`sqlmap`**|Web Exploitation|Automates SQL injection testing from within the console.|
+|**`db_tracker`**|Assessment Automation|Monitors database events and tracks service state changes.|
+|**`socket_logger`**|Network Logging|Logs raw socket communications for reporting and attribution.|
+|**`incognito`**|Meterpreter Extension|Manipulates and impersonates Windows access tokens.|
+|**`mimikatz` / `kiwi`**|Credential Extraction|Dumps plaintext credentials, NTLM hashes, and Kerberos tickets directly from memory.|
+
+## 5. Architectural Deep Dive: Ruby Mixins
+
+The flexibility of the Metasploit Framework is rooted in **Ruby Mixins** rather than standard object-oriented class inheritance.
+
+$$\text{Class Definition} \quad \text{+} \quad \text{include [Module / Mixin]} \quad \longrightarrow \quad \text{Extended Method Capabilities}$$
+
+```
++-------------------------------------------------------------+
+|                     Metasploit Exploit Base                 |
++------------------------------┬------------------------------+
+                               │
+            ┌──────────────────┴──────────────────┐
+            ▼                                     ▼
++-----------------------+             +-----------------------+
+| include Msf::Exploit::|             | include Msf::Exploit::|
+| Remote::Tcp           |             | Remote::HttpClient    |
+| (Provides socket I/O) |             | (Provides HTTP methods|
++-----------------------+             +-----------------------+
+```
+
+- **Mechanism:** Rather than inheriting from a rigid parent class, a module or plugin pulls in pre-packaged capabilities using the Ruby `include` keyword.
+    
+- **Offensive Benefit:** Allows an exploit author to import complex networking, SSL negotiation, payload encoding, and HTTP formatting methods into a module using a single line of code.
