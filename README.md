@@ -574,3 +574,144 @@ Compatible Encoders
 |`x64/zutto_dekiru`|x64 (64-bit)|Manual|Dynamic block-based polymorphic 64-bit XOR encoder.|
 |`generic/none`|Multi|Normal|Skips encoding; outputs raw shellcode untouched.|
 
+---
+
+# Metasploit Database Management & Assessment Tracking
+
+## Overview
+
+During complex multi-host network engagements, tracking discovered services, open ports, identified vulnerabilities, dumped credentials, and loot manually creates operational friction. Metasploit integrates natively with a **PostgreSQL** backend to centralize, structure, and automate target data management.
+
+Connecting `msfconsole` to PostgreSQL enables data import/export, integrated scanning via `db_nmap`, segmented project tracking using **Workspaces**, and automatic population of module parameters (such as `RHOSTS`).
+
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │             PostgreSQL Service               │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+                                    msfdb init / msfdb run / db_connect
+                                                         │
+                                                         ▼
+                                  ┌──────────────────────────────────────────────┐
+                                  │                  msfconsole                  │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+         ┌───────────────────┬───────────────────────────┼───────────────────────────┬───────────────────┐
+         ▼                   ▼                           ▼                           ▼                   ▼
++-----------------+ +-----------------+         +-----------------+         +-----------------+ +-----------------+
+|   Workspaces    | |   db_nmap /     |         |     Hosts &     |         |  Credentials &  | |   Data Export   |
+| (Project scope) | |   db_import     |         |    Services     |         |      Loot       | |   (db_export)   |
++-----------------+ +-----------------+         +-----------------+         +-----------------+ +-----------------+
+```
+
+## 1. Database Initialization & Setup
+
+To establish the backend connection, ensure the PostgreSQL service is active and initialize the Metasploit database schema:
+
+```bash
+# 1. Start PostgreSQL Service
+sudo systemctl start postgresql
+
+# 2. Initialize MSF Database
+sudo msfdb init
+
+# 3. Launch MSF with database auto-connection
+sudo msfdb run
+```
+
+### Database Troubleshooting & Re-initialization
+
+If configuration mismatches or authentication errors occur:
+
+```bash
+msfdb reinit
+cp /usr/share/metasploit-framework/config/database.yml ~/.msf4/
+sudo service postgresql restart
+msfconsole -q
+```
+
+### Verifying Database Connection
+
+Inside `msfconsole`:
+
+```bash
+msf6 > db_status
+[*] Connected to msf. Connection type: PostgreSQL.
+```
+
+## 2. Segmenting Assessments with Workspaces
+
+**Workspaces** isolate targets, scan logs, and looted artifacts by engagement scope, subnet, or client environment—preventing cross-contamination.
+
+```bash
+# List available workspaces (* denotes active workspace)
+msf6 > workspace
+
+# Create a new workspace
+msf6 > workspace -a Target_Network_1
+
+# Switch active workspace
+msf6 > workspace Target_Network_1
+
+# Delete a workspace
+msf6 > workspace -d Target_Network_1
+```
+
+## 3. Ingesting & Managing Scan Data
+
+### Importing External Scans (`db_import`)
+
+Import Nmap XML outputs or vulnerability scanner files directly into the active database workspace:
+
+```bash
+msf6 > db_import Target.xml
+[*] Importing 'Nmap XML' data
+[*] Successfully imported Target.xml
+```
+
+### Native In-Console Scanning (`db_nmap`)
+
+Run Nmap scans directly from `msfconsole` without backgrounding sessions; results automatically populate database tables:
+
+```bash
+msf6 > db_nmap -sV -sS 10.10.10.8
+```
+
+## 4. Querying & Manipulating Stored Assessment Data
+
+Once data is imported, query structured tables using dedicated database backend commands:
+
+```
+[ Hosts Table (hosts) ] ──> [ Services Table (services) ] ──> [ Credentials (creds) ] ──> [ Loot (loot) ]
+```
+
+### Database Query Commands Matrix
+
+|**Command**|**Primary Function**|**Key Filtering Flags**|**Operational Example**|
+|---|---|---|---|
+|**`hosts`**|Displays identified target IPs, OS signatures, and hostnames.|`-u` (Up hosts only)<br><br>  <br><br>`-R` (Set `RHOSTS` automatically)<br><br>  <br><br>`-S` (Search keyword)|`hosts -u -R`<br><br>  <br><br>_(Pipes all active hosts directly to active module's `RHOSTS`)_|
+|**`services`**|Lists discovered network ports, protocols, and daemon versions.|`-p` (Filter ports)<br><br>  <br><br>`-s` (Filter service name)<br><br>  <br><br>`-u` (Up services)|`services -p 445 --rhosts`<br><br>  <br><br>_(Sets `RHOSTS` to all hosts with SMB open)_|
+|**`creds`**|Manages plaintext passwords, NTLM hashes, and SSH keys.|`-t` (Filter type: password/ntlm/hash)<br><br>  <br><br>`-s` (Filter service)<br><br>  <br><br>`-o` (Export to CSV/JtR/Hashcat)|`creds -s smb -o hashes.jtr`<br><br>  <br><br>_(Exports SMB credentials in JtR-ready format)_|
+|**`loot`**|Tracks dumped hashes (`/etc/shadow`, SAM), configs, and exfiltrated files.|`-t` (Filter loot type)<br><br>  <br><br>`-d` (Delete loot entry)|`loot -t hashdump`|
+
+### Adding Credentials Manually
+
+```bash
+# Add NTLM hash
+msf6 > creds add user:Administrator ntlm:E2FC15074BF7751DD408E6B105741864:A1074A69B1BDE45403AB680504BBDD1A realm:CORP
+
+# Add SSH Private Key
+msf6 > creds add user:root ssh-key:/root/.ssh/id_rsa
+```
+
+## 5. Assessment Backup & Data Export
+
+Before concluding an engagement or resetting the host environment, export all findings into portable XML or credential dumps:
+
+```bash
+# Export active workspace to XML
+msf6 > db_export -f xml /root/engagement_backup.xml
+
+# Export password hashes for offline cracking
+msf6 > db_export -f pwdump /root/cracking_hashes.txt
+```
