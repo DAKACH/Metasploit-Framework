@@ -956,11 +956,6 @@ msf6 post(windows/gather/smart_hashdump) > run
 
 When running persistent services (like `exploit/multi/handler`), running them in the foreground locks the console. Using `Ctrl + C` terminates the listener and releases the port. To keep listeners running while retaining console control, run them as **Jobs**.
 
-```
-$$\text{Foreground Execution: } \quad \text{exploit} \quad \longrightarrow \quad \text{Locks Console}$$
-$$\text{Background Job: } \quad \text{exploit -j} \quad \longrightarrow \quad \text{Runs in Background, Releases Console}$$
-```
-
 ### Core Job Commands
 
 |**Command**|**Function**|
