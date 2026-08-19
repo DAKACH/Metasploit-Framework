@@ -223,3 +223,100 @@ nt authority\system
 
 ---
 
+# Metasploit Target Specification & Architecture Selection
+
+## Overview
+
+In Metasploit, **Targets** are operating system and service profiles mapped to specific memory layouts, base addresses, Return-Oriented Programming (ROP) gadgets, and instruction pointers (`EIP`/`RIP` offsets).
+
+While modern memory-corruption exploits often include heuristic auto-detection (`Automatic`), reliable exploitation frequently requires setting the explicit target ID matching the target's operating system version, patch level (Service Pack), software build, and system language.
+
+```
+[ Active Exploit Module ] ──> [ Query Targets (`show targets`) ] ──> [ Set Target (`set target <ID>`) ] ──> [ Accurate Memory Offsets ]
+```
+
+## 1. Inspecting & Selecting Targets
+
+The `show targets` command outputs all memory configurations and operating system versions supported by the loaded exploit module.
+
+
+```bash
+# Executing 'show targets' outside an exploit module yields an error:
+msf6 > show targets
+[-] No exploit module selected.
+```
+
+### Generic vs. Granular Targets
+
+- **Generic/Automatic:** Many network service exploits (e.g., `ms17_010_psexec`) feature a single dynamic target (`0 Automatic`).
+    
+- **Memory-Specific Targets:** Client-side exploits and memory-corruption vulnerabilities (e.g., Use-After-Free, buffer overflows) require precise memory layouts and DLL offsets.
+    
+
+### Practical Example: `ie_execcommand_uaf` (MS12-063)
+
+```bash
+msf6 exploit(windows/browser/ie_execcommand_uaf) > show targets
+
+Exploit targets:
+
+   Id  Name
+   --  ----
+   0   Automatic
+   1   IE 7 on Windows XP SP3
+   2   IE 8 on Windows XP SP3
+   3   IE 7 on Windows Vista
+   4   IE 8 on Windows Vista
+   5   IE 8 on Windows 7
+   6   IE 9 on Windows 7
+```
+
+### Setting the Specific Target
+
+```bash
+# Select target index 6 (IE 9 on Windows 7)
+msf6 exploit(windows/browser/ie_execcommand_uaf) > set target 6
+target => 6
+```
+
+## 2. Technical Determinants of Exploit Targets
+
+Target profiles differ due to how binaries and dynamic link libraries (`DLLs`) load into virtual memory:
+
+```
+                      ┌──────────────────────────────────────────────┐
+                      │          Target Selection Determinants       │
+                      └──────────────────────┬───────────────────────┘
+                                             │
+         ┌───────────────────────────────────┼───────────────────────────────────┐
+         ▼                                   ▼                                   ▼
++-------------------+               +-------------------+               +-------------------+
+|  OS & Patch Level |               |   Memory Gadgets  |               |  Language / Pack  |
+| Windows 7 SP1 vs  |               | `jmp esp` / ROP   |               | Hardcoded pointer |
+| WinXP SP3 offsets |               | chain addresses   |               | shifts in DLLs    |
++-------------------+               +-------------------+               +-------------------+
+```
+
+- **Return Addresses:** Pointers such as `jmp esp`, `call eax`, or `pop/pop/ret` sequences must point to static, executable memory segments containing no bad characters.
+    
+- **DLL Versions:** System DLLs (e.g., `msvcrt.dll`, `ntdll.dll`, `kernel32.dll`) shift across service packs, altering instruction addresses.
+    
+- **Third-Party Dependencies:** Certain exploits rely on non-ASLR third-party modules (e.g., specific Java Runtime Environment `JRE 1.6.x` versions) to bypass memory mitigations via ROP chains.
+    
+
+## 3. Custom Target Identification Workflow
+
+When analyzing custom binaries or non-standard targets:
+
+1. **Extract Binaries:** Retrieve the exact application and operating system executable files (`.exe`, `.dll`) from the target system.
+    
+2. **Locate Return Addresses:** Use binary inspection tools such as `msfpescan` or debugger plugins (`mona.py`) to discover viable return pointers:
+    
+```bash
+    msfpescan -j esp /path/to/target.dll
+```
+  
+3. **Verify Module Metadata:** Review technical comments and references via `info` to verify prerequisites before launching execution.
+
+---
+
